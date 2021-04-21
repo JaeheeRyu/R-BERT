@@ -7,14 +7,15 @@ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from tqdm import tqdm, trange
 from transformers import AdamW, BertConfig, get_linear_schedule_with_warmup
 
-from model import RBERT
+from model import RBERT_RobertaForSequenceClassification
 from utils import compute_metrics, get_label, write_prediction
+from loss import create_criterion
 
 logger = logging.getLogger(__name__)
 
 
 class Trainer(object):
-    def __init__(self, args, train_dataset=None, dev_dataset=None, test_dataset=None):
+    def __init__(self, CFG, args, train_dataset=None, dev_dataset=None, test_dataset=None):
         self.args = args
         self.train_dataset = train_dataset
         self.dev_dataset = dev_dataset
@@ -30,7 +31,8 @@ class Trainer(object):
             id2label={str(i): label for i, label in enumerate(self.label_lst)},
             label2id={label: i for i, label in enumerate(self.label_lst)},
         )
-        self.model = RBERT.from_pretrained(args.model_name_or_path, config=self.config, args=args)
+        self.model = RBERT_RobertaForSequenceClassification(args.model_name_or_path, num_classes=42)
+
 
         # GPU or CPU
         self.device = "cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu"
@@ -91,21 +93,38 @@ class Trainer(object):
 
         train_iterator = trange(int(self.args.num_train_epochs), desc="Epoch")
 
+        criterion1 = create_criterion('cross_entropy')
+        criterion2 = create_criterion('f1')
+        criterion3 = create_criterion('focal')
+        criterion4 = create_criterion('label_smoothing')
+
+
         for _ in train_iterator:
             epoch_iterator = tqdm(train_dataloader, desc="Iteration")
             for step, batch in enumerate(epoch_iterator):
                 self.model.train()
+                # batch = tuple(t.to(self.device) for t in batch)  # GPU or CPU
+                # inputs = {
+                #     "input_ids": batch[0],
+                #     "attention_mask": batch[1],
+                #     "token_type_ids": batch[2],
+                #     "labels": batch[3],
+                #     "e1_mask": batch[4],
+                #     "e2_mask": batch[5],
+                # }
+                # outputs = self.model(**inputs)
+                # loss = outputs[0]
+
                 batch = tuple(t.to(self.device) for t in batch)  # GPU or CPU
-                inputs = {
-                    "input_ids": batch[0],
-                    "attention_mask": batch[1],
-                    "token_type_ids": batch[2],
-                    "labels": batch[3],
-                    "e1_mask": batch[4],
-                    "e2_mask": batch[5],
-                }
-                outputs = self.model(**inputs)
-                loss = outputs[0]
+
+                outputs = self.model(input_ids=batch[0],
+                                     attention_mask=batch[1],
+                                     e1_mask=batch[4],
+                                     e2_mask=batch[5])
+                _, preds = torch.max(outputs, 1)
+                loss1 = criterion3(outputs, batch[3])
+                loss2 = criterion4(outputs, batch[3])
+                loss = loss1 + loss2
 
                 if self.args.gradient_accumulation_steps > 1:
                     loss = loss / self.args.gradient_accumulation_steps
@@ -124,8 +143,8 @@ class Trainer(object):
                     if self.args.logging_steps > 0 and global_step % self.args.logging_steps == 0:
                         self.evaluate("test")  # There is no dev set for semeval task
 
-                    if self.args.save_steps > 0 and global_step % self.args.save_steps == 0:
-                        self.save_model()
+                    # if self.args.save_steps > 0 and global_step % self.args.save_steps == 0:
+                    #     self.save_model()
 
                 if 0 < self.args.max_steps < global_step:
                     epoch_iterator.close()
@@ -157,32 +176,47 @@ class Trainer(object):
         nb_eval_steps = 0
         preds = None
         out_label_ids = None
-
+        criterion1 = create_criterion('cross_entropy')
+        criterion2 = create_criterion('f1')
+        criterion3 = create_criterion('focal')
+        criterion4 = create_criterion('label_smoothing')
         self.model.eval()
 
         for batch in tqdm(eval_dataloader, desc="Evaluating"):
             batch = tuple(t.to(self.device) for t in batch)
             with torch.no_grad():
-                inputs = {
-                    "input_ids": batch[0],
-                    "attention_mask": batch[1],
-                    "token_type_ids": batch[2],
-                    "labels": batch[3],
-                    "e1_mask": batch[4],
-                    "e2_mask": batch[5],
-                }
-                outputs = self.model(**inputs)
-                tmp_eval_loss, logits = outputs[:2]
+                # inputs = {
+                #     "input_ids": batch[0],
+                #     "attention_mask": batch[1],
+                #     "token_type_ids": batch[2],
+                #     "labels": batch[3],
+                #     "e1_mask": batch[4],
+                #     "e2_mask": batch[5],
+                # }
+                # outputs = self.model(**inputs)
+                # tmp_eval_loss, logits = outputs[:2]
+
+                # print(batch)
+                logits = self.model(input_ids=batch[0],
+                                     attention_mask=batch[1],
+                                     e1_mask=batch[4],
+                                     e2_mask=batch[5])
+
+                loss1 = criterion3(logits, batch[3])
+                loss2 = criterion4(logits, batch[3])
+                tmp_eval_loss = loss1 + loss2
 
                 eval_loss += tmp_eval_loss.mean().item()
             nb_eval_steps += 1
 
             if preds is None:
                 preds = logits.detach().cpu().numpy()
-                out_label_ids = inputs["labels"].detach().cpu().numpy()
+                # out_label_ids = inputs["labels"].detach().cpu().numpy()
+                out_label_ids = batch[3].detach().cpu().numpy()
             else:
                 preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
-                out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
+                # out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
+                out_label_ids = np.append(out_label_ids, batch[3].detach().cpu().numpy(), axis=0)
 
         eval_loss = eval_loss / nb_eval_steps
         results = {"loss": eval_loss}
@@ -190,6 +224,7 @@ class Trainer(object):
         write_prediction(self.args, os.path.join(self.args.eval_dir, "proposed_answers.txt"), preds)
 
         result = compute_metrics(preds, out_label_ids)
+        print(f'evaluate acc:{result}')
         results.update(result)
 
         logger.info("***** Eval results *****")
@@ -203,7 +238,11 @@ class Trainer(object):
         if not os.path.exists(self.args.model_dir):
             os.makedirs(self.args.model_dir)
         model_to_save = self.model.module if hasattr(self.model, "module") else self.model
-        model_to_save.save_pretrained(self.args.model_dir)
+        # model_to_save.save_pretrained(self.args.model_dir)
+        print(type(model_to_save))
+        print(type(self.model))
+        # self.model.save_pretrained(self.args.model_dir)
+        torch.save(self.model.module.state_dict(), f"{self.args.model_dir}/checkpoint.pth")
 
         # Save training arguments together with the trained model
         torch.save(self.args, os.path.join(self.args.model_dir, "training_args.bin"))

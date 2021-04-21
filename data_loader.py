@@ -139,21 +139,24 @@ def convert_examples_to_features(
 ):
     features = []
     for (ex_index, example) in enumerate(examples):
-        if ex_index % 5000 == 0:
+        if ex_index % 4500 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
 
         tokens_a = tokenizer.tokenize(example.text_a)
-
+        # print(tokens_a)
         e11_p = tokens_a.index("<e1>")  # the start position of entity1
         e12_p = tokens_a.index("</e1>")  # the end position of entity1
         e21_p = tokens_a.index("<e2>")  # the start position of entity2
         e22_p = tokens_a.index("</e2>")  # the end position of entity2
 
+        if (e11_p > max_seq_len or e12_p > max_seq_len or e21_p > max_seq_len or e22_p > max_seq_len):
+            tokens_a = tokens_a[len(tokens_a) - max_seq_len:]  # entity tag 하나라도 max length를 넘으면 뒤에부터 넣어줌
+
         # Replace the token
-        tokens_a[e11_p] = "$"
-        tokens_a[e12_p] = "$"
-        tokens_a[e21_p] = "#"
-        tokens_a[e22_p] = "#"
+        tokens_a[e11_p] = "α"
+        tokens_a[e12_p] = "α"
+        tokens_a[e21_p] = "β"
+        tokens_a[e22_p] = "β"
 
         # Add 1 because of the [CLS] token
         e11_p += 1
@@ -197,14 +200,16 @@ def convert_examples_to_features(
             e1_mask[i] = 1
         for i in range(e21_p, e22_p + 1):
             e2_mask[i] = 1
+        # print(e1_mask)
+        # print(e2_mask)
 
-        assert len(input_ids) == max_seq_len, "Error with input length {} vs {}".format(len(input_ids), max_seq_len)
-        assert len(attention_mask) == max_seq_len, "Error with attention mask length {} vs {}".format(
-            len(attention_mask), max_seq_len
-        )
-        assert len(token_type_ids) == max_seq_len, "Error with token type length {} vs {}".format(
-            len(token_type_ids), max_seq_len
-        )
+        # assert len(input_ids) == max_seq_len, "Error with input length {} vs {}".format(len(input_ids), max_seq_len)
+        # assert len(attention_mask) == max_seq_len, "Error with attention mask length {} vs {}".format(
+        #     len(attention_mask), max_seq_len
+        # )
+        # assert len(token_type_ids) == max_seq_len, "Error with token type length {} vs {}".format(
+        #     len(token_type_ids), max_seq_len
+        # )
 
         label_id = int(example.label)
 

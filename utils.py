@@ -62,5 +62,5 @@ def acc_and_f1(preds, labels, average="macro"):
     acc = simple_accuracy(preds, labels)
     return {
         "acc": acc,
-        "f1": official_f1(),
+        # "f1": official_f1(),
     }
